@@ -1954,6 +1954,14 @@ impl EditorView {
             MouseEventKind::Down(MouseButton::Left) => {
                 let editor = &mut cxt.editor;
 
+                // If the user clicks in the main buffer area while the file tree explorer
+                // had focus, clear the explorer focus so input/selection properly transfers
+                // to the buffer (this addresses the reported issue).
+                if editor.file_tree_visible && editor.file_tree_focused {
+                    editor.file_tree_focused = false;
+                    editor.needs_redraw = true;
+                }
+
                 if let Some((pos, view_id)) = pos_and_view(editor, row, column, true) {
                     editor.focus(view_id);
 

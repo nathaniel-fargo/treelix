@@ -188,24 +188,24 @@ impl EditorView {
         &mut self.spinners
     }
 
-    /// Handle keys while the file tree sidebar is visible.
-    /// Returns true if the key was consumed by the tree.
-    fn handle_file_tree_key(&mut self, cx: &mut commands::Context, key: KeyEvent) -> bool {
+    /// Handle input when the file tree sidebar has explicit focus.
+    /// This is the "popover-like" mode: the sidebar owns the keyboard.
+    ///
+    /// Returns true if the key was a meaningful tree action.
+    /// The caller (see Event::Key handling) will consume the event either way
+    /// so nothing leaks to the main editor.
+    fn handle_focused_tree_input(&mut self, cx: &mut commands::Context, key: KeyEvent) -> bool {
         let tree = match &mut self.file_tree {
             Some(t) if cx.editor.file_tree_visible => t,
             _ => return false,
         };
 
-        // Ctrl+e always toggles focus between tree and main editor.
-        // This is the primary way to jump in/out and works from both sides.
-        if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            cx.editor.file_tree_focused = !cx.editor.file_tree_focused;
+        // Unfocus / return to main editor (works like dismissing a popover)
+        if (key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL))
+            || matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
+        {
+            cx.editor.file_tree_focused = false;
             return true;
-        }
-
-        // Auto-focus the tree when user starts navigating it with movement keys
-        if !cx.editor.file_tree_focused {
-            cx.editor.file_tree_focused = true;
         }
 
         match key.code {
@@ -239,16 +239,8 @@ impl EditorView {
                 }
                 true
             }
-            KeyCode::Char('o') => {
-                // 'o' toggles expand/collapse for directories (Space no longer does this
-                // so that the leader key still works while the tree has focus).
+            KeyCode::Char('o') | KeyCode::Char(' ') => {
                 tree.toggle_selected();
-                true
-            }
-            KeyCode::Char('q') | KeyCode::Esc => {
-                // Esc / q while in the tree: return focus to the main editor.
-                // The tree remains visible on the left. Use Space+E (or C-e) to manage it.
-                cx.editor.file_tree_focused = false;
                 true
             }
             _ => false,
@@ -1781,33 +1773,59 @@ impl Component for EditorView {
                 // clear status
                 cx.editor.status_msg = None;
 
-                // File tree sidebar key handling (treelix)
-                // - If tree is focused: normal tree navigation
-                // - If tree is visible but not focused: certain tree keys (j/k etc) will
-                //   auto-focus the tree so users can easily jump in.
+                // === File tree sidebar input handling (popover-like model) ===
+                //
+                // When the left sidebar has explicit focus (file_tree_focused == true),
+                // it behaves like a focused popover/modal for input purposes:
+                //   - It is the *exclusive* consumer of keyboard input.
+                //   - Tree navigation / actions are handled.
+                //   - "Unfocus" keys (C-e, Esc, q) return control to the main editor.
+                //   - ALL OTHER keys are consumed here and do **not** reach the normal
+                //     editor keymaps/commands. This completely eliminates double-input
+                //     and leakage problems.
+                //
+                // When the tree is visible but *not* focused, normal editor input works
+                // as usual. A small set of activation keys (mainly C-e, and nav keys
+                // for convenience) can enter focus mode.
                 if cx.editor.file_tree_visible {
                     let is_ctrl_e = key.code == KeyCode::Char('e')
                         && key.modifiers.contains(KeyModifiers::CONTROL);
 
-                    let should_handle = cx.editor.file_tree_focused
-                        || matches!(
-                            key.code,
-                            KeyCode::Char('j')
-                                | KeyCode::Char('k')
-                                | KeyCode::Down
-                                | KeyCode::Up
-                                | KeyCode::Char('h')
-                                | KeyCode::Char('l')
-                                | KeyCode::Left
-                                | KeyCode::Right
-                                | KeyCode::Enter
-                                | KeyCode::Char('o')
-                        )
-                        || is_ctrl_e;
+                    if cx.editor.file_tree_focused {
+                        // === TREE HAS FOCUS: exclusive input ownership (popover style) ===
+                        let consumed_by_tree = self.handle_focused_tree_input(&mut cx, key);
 
-                    if should_handle && self.handle_file_tree_key(&mut cx, key) {
-                        cx.editor.needs_redraw = true;
+                        // Always consume the event so it never reaches the main editor
+                        // keymap / command system. Only unfocus actions change state.
+                        if consumed_by_tree || is_ctrl_e || matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                            cx.editor.needs_redraw = true;
+                        }
                         return EventResult::Consumed(None);
+                    } else {
+                        // === TREE VISIBLE BUT NOT FOCUSED ===
+                        // Normal editor input flows through.
+                        // Offer convenient auto-focus on explicit tree activation keys.
+                        if is_ctrl_e
+                            || matches!(
+                                key.code,
+                                KeyCode::Char('j')
+                                    | KeyCode::Char('k')
+                                    | KeyCode::Down
+                                    | KeyCode::Up
+                                    | KeyCode::Char('h')
+                                    | KeyCode::Char('l')
+                                    | KeyCode::Left
+                                    | KeyCode::Right
+                                    | KeyCode::Enter
+                                    | KeyCode::Char('o')
+                            )
+                        {
+                            // Activate tree focus and let the (now-focused) handler deal with it
+                            cx.editor.file_tree_focused = true;
+                            let _ = self.handle_focused_tree_input(&mut cx, key);
+                            cx.editor.needs_redraw = true;
+                            return EventResult::Consumed(None);
+                        }
                     }
                 }
 

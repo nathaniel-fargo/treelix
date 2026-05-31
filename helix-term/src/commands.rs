@@ -406,6 +406,7 @@ impl MappableCommand {
         file_explorer, "Open file explorer in workspace root",
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
+        file_tree_toggle, "Toggle file tree sidebar (right side, nvim-tree style)",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
@@ -3264,6 +3265,13 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
     if let Ok(picker) = ui::file_explorer(cwd, cx.editor) {
         cx.push_layer(Box::new(overlaid(picker)));
     }
+}
+
+/// Toggle visibility of the persistent file tree sidebar (nvim-tree like)
+/// on the right side of the editor.
+fn file_tree_toggle(cx: &mut Context) {
+    cx.editor.file_tree_visible = !cx.editor.file_tree_visible;
+    cx.editor.needs_redraw = true;
 }
 
 struct PathStyleConfig {

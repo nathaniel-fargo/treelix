@@ -266,6 +266,27 @@ impl Default for FileExplorerConfig {
     }
 }
 
+/// Configuration for the file tree sidebar (nvim-tree like interface).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct FileTreeConfig {
+    /// Show the file tree sidebar by default on the right side of the editor.
+    /// Defaults to false. The sidebar can be toggled at runtime with the
+    /// `:file-tree` or `file-tree-toggle` command (to be added).
+    pub enable: bool,
+    /// Width of the file tree sidebar in terminal columns. Defaults to 30.
+    pub width: u16,
+}
+
+impl Default for FileTreeConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            width: 30,
+        }
+    }
+}
+
 fn serialize_alphabet<S>(alphabet: &[char], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -366,6 +387,8 @@ pub struct Config {
     pub auto_info: bool,
     pub file_picker: FilePickerConfig,
     pub file_explorer: FileExplorerConfig,
+    /// Configuration for the persistent file tree sidebar (nvim-tree style).
+    pub file_tree: FileTreeConfig,
     /// Configuration of the statusline elements
     pub statusline: StatusLineConfig,
     /// Shape for cursor in each mode
@@ -1120,6 +1143,7 @@ impl Default for Config {
             auto_info: true,
             file_picker: FilePickerConfig::default(),
             file_explorer: FileExplorerConfig::default(),
+            file_tree: FileTreeConfig::default(),
             statusline: StatusLineConfig::default(),
             cursor_shape: CursorShapeConfig::default(),
             true_color: false,
@@ -1238,6 +1262,10 @@ pub struct Editor {
     pub last_completion: Option<CompleteAction>,
     pub last_cwd: Option<PathBuf>,
     pub dir_stack: VecDeque<PathBuf>,
+
+    /// Whether the file tree sidebar (right side, nvim-tree style) is currently visible.
+    /// Toggled via command; initialized from `config.file_tree.enable`.
+    pub file_tree_visible: bool,
 
     pub exit_code: i32,
 
@@ -1373,6 +1401,8 @@ impl Editor {
             last_motion: None,
             last_completion: None,
             last_cwd: None,
+            dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
+            file_tree_visible: conf.file_tree.enable,
             config,
             auto_pairs,
             exit_code: 0,
@@ -1381,7 +1411,6 @@ impl Editor {
             handlers,
             mouse_down_range: None,
             cursor_cache: CursorCache::default(),
-            dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
         }
     }
 

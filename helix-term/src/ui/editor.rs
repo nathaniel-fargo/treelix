@@ -707,6 +707,100 @@ impl EditorView {
         }
     }
 
+    /// Render the file tree sidebar (stub implementation for initial integration).
+    /// Shows a static example tree on the right. Will be expanded with real FS
+    /// tree, expand/collapse, selection, file opening etc.
+    pub fn render_file_tree(
+        &self,
+        area: Rect,
+        surface: &mut Surface,
+        cx: &mut Context,
+    ) {
+        if area.width < 4 || area.height < 3 {
+            return;
+        }
+
+        let theme = &cx.editor.theme;
+        let bg_style = theme.get("ui.background");
+        surface.set_style(area, bg_style);
+
+        // Left separator line (between editor and tree)
+        let sep_style = theme.get("ui.window");
+        let sep_x = area.x;
+        for y in area.y..area.bottom() {
+            surface[(sep_x, y)]
+                .set_symbol(tui::symbols::line::VERTICAL)
+                .set_style(sep_style);
+        }
+
+        // Header row background
+        let header_bg = theme
+            .try_get("ui.statusline")
+            .unwrap_or_else(|| theme.get("ui.text"));
+        for x in area.x..area.right() {
+            surface[(x, area.y)].set_style(header_bg);
+        }
+
+        // Title
+        let title = " Explorer ";
+        let title_style = theme.get("ui.text");
+        if area.width > title.len() as u16 + 2 {
+            surface.set_string(area.x + 1, area.y, title, title_style);
+        }
+
+        // Stub tree content (hardcoded to demonstrate layout; real impl will be dynamic)
+        let text_style = theme.get("ui.text");
+        let dir_style = theme.get("ui.text.directory");
+        let dim_style = theme
+            .try_get("ui.text.dim")
+            .unwrap_or_else(|| text_style);
+
+        let mut row = area.y + 1;
+        let end_row = area.bottom().saturating_sub(1);
+
+        let stub_lines: &[(&str, bool)] = &[
+            ("▶ helix-term", true),
+            ("  ▶ src", true),
+            ("    ui", false),
+            ("    commands.rs", false),
+            ("▶ helix-view", true),
+            ("  src", false),
+            ("  editor.rs", false),
+            (".github", false),
+            ("Cargo.toml", false),
+            ("README.md", false),
+        ];
+
+        for (name, is_dir) in stub_lines {
+            if row >= end_row {
+                break;
+            }
+            let style = if *is_dir { dir_style } else { text_style };
+            // simple indent + bullet
+            let prefix = if *is_dir { "▸ " } else { "  " };
+            let display = format!("{}{}", prefix, name);
+            surface.set_stringn(
+                area.x + 1,
+                row,
+                &display,
+                (area.width.saturating_sub(2)) as usize,
+                style,
+            );
+            row += 1;
+        }
+
+        // WIP footer note at bottom of panel
+        if area.height > 6 {
+            let note = "[tree view WIP]";
+            surface.set_string(
+                area.x + 1,
+                area.bottom().saturating_sub(1),
+                note,
+                dim_style,
+            );
+        }
+    }
+
     pub fn render_gutter<'d>(
         editor: &'d Editor,
         doc: &'d Document,
@@ -1614,16 +1708,42 @@ impl Component for EditorView {
             editor_area = editor_area.clip_top(1);
         }
 
+        // Reserve space for file tree sidebar on the right (if visible).
+        // The split tree (editor_area) is sized to the remaining left portion.
+        let sidebar_width = if cx.editor.file_tree_visible {
+            config.file_tree.width.min(editor_area.width.saturating_sub(20))
+        } else {
+            0
+        };
+        if sidebar_width > 0 {
+            editor_area = editor_area.clip_right(sidebar_width);
+        }
+
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 
         if use_bufferline {
-            Self::render_bufferline(cx.editor, area.with_height(1), surface);
+            let buf_area = if sidebar_width > 0 {
+                area.with_height(1).clip_right(sidebar_width)
+            } else {
+                area.with_height(1)
+            };
+            Self::render_bufferline(cx.editor, buf_area, surface);
+        }
+
+        // Render file tree sidebar (right) if enabled. It spans the content height.
+        if sidebar_width > 0 {
+            let mut sidebar_area = area.clip_bottom(1);
+            if use_bufferline {
+                sidebar_area = sidebar_area.clip_top(1);
+            }
+            sidebar_area = sidebar_area.clip_left(area.width.saturating_sub(sidebar_width));
+            self.render_file_tree(sidebar_area, surface, cx);
         }
 
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
-            self.render_view(cx.editor, doc, view, area, surface, is_focused);
+            self.render_view(cx.editor, doc, view, editor_area, surface, is_focused);
         }
 
         if config.auto_info {

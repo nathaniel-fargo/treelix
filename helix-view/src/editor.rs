@@ -1263,9 +1263,11 @@ pub struct Editor {
     pub last_cwd: Option<PathBuf>,
     pub dir_stack: VecDeque<PathBuf>,
 
-    /// Whether the file tree sidebar (right side, nvim-tree style) is currently visible.
-    /// Toggled via command; initialized from `config.file_tree.enable`.
+    /// Whether the file tree sidebar is currently visible.
     pub file_tree_visible: bool,
+    /// Whether the file tree sidebar currently has input focus (for navigation).
+    /// When false but visible, the main editor area receives keys normally.
+    pub file_tree_focused: bool,
 
     pub exit_code: i32,
 
@@ -1403,6 +1405,7 @@ impl Editor {
             last_cwd: None,
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             file_tree_visible: conf.file_tree.enable,
+            file_tree_focused: false,
             config,
             auto_pairs,
             exit_code: 0,

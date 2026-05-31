@@ -1803,29 +1803,15 @@ impl Component for EditorView {
                         return EventResult::Consumed(None);
                     } else {
                         // === TREE VISIBLE BUT NOT FOCUSED ===
-                        // Normal editor input flows through.
-                        // Offer convenient auto-focus on explicit tree activation keys.
-                        if is_ctrl_e
-                            || matches!(
-                                key.code,
-                                KeyCode::Char('j')
-                                    | KeyCode::Char('k')
-                                    | KeyCode::Down
-                                    | KeyCode::Up
-                                    | KeyCode::Char('h')
-                                    | KeyCode::Char('l')
-                                    | KeyCode::Left
-                                    | KeyCode::Right
-                                    | KeyCode::Enter
-                                    | KeyCode::Char('o')
-                            )
-                        {
-                            // Activate tree focus and let the (now-focused) handler deal with it
+                        // Normal editor input (including j/k/h/l in the buffer) flows through completely.
+                        // The only way to give input focus to the sidebar is explicitly via C-e.
+                        if is_ctrl_e {
                             cx.editor.file_tree_focused = true;
-                            let _ = self.handle_focused_tree_input(&mut cx, key);
                             cx.editor.needs_redraw = true;
                             return EventResult::Consumed(None);
                         }
+                        // All other keys (including buffer navigation) are left alone
+                        // so they reach the normal editor keymap / insert mode etc.
                     }
                 }
 

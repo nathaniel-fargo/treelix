@@ -96,7 +96,7 @@ pub struct FileEntry {
 }
 
 #[derive(Debug, Clone)]
-enum InputMode {
+pub(crate) enum InputMode {
     Create { name: String },
     Rename { original_path: PathBuf, name: String },
     ConfirmDelete { path: PathBuf },
@@ -184,6 +184,24 @@ impl FileTree {
         self.entries.get(self.selected).map(|e| e.path.as_path())
     }
 
+    /// Change the tree root to a new directory (e.g. "cd" into a folder or set as new workspace root).
+    pub fn cd_to(&mut self, new_root: PathBuf) {
+        let new_root = helix_stdx::path::normalize(new_root);
+        if new_root.is_dir() {
+            self.root = new_root;
+            self.expanded.clear();
+            self.selected = 0;
+            self.rebuild_entries();
+        }
+    }
+
+    /// Go up one directory level.
+    pub fn go_up(&mut self) {
+        if let Some(parent) = self.root.parent() {
+            self.cd_to(parent.to_path_buf());
+        }
+    }
+
     /// Returns the directory context for operations like create/paste.
     /// If selected item is a dir, use it; otherwise use its parent.
     fn operation_target_dir(&self) -> Option<PathBuf> {
@@ -205,6 +223,22 @@ impl FileTree {
         if let Some(path) = self.selected_path() {
             self.clipboard = Some((path.to_path_buf(), false));
         }
+    }
+
+    /// Recursive directory copy helper.
+    fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            let dest_path = dst.join(entry.file_name());
+            if ty.is_dir() {
+                Self::copy_dir_all(&entry.path(), &dest_path)?;
+            } else {
+                std::fs::copy(entry.path(), dest_path)?;
+            }
+        }
+        Ok(())
     }
 
     /// Perform paste into the current operation target dir.
@@ -234,12 +268,13 @@ impl FileTree {
             self.clipboard = None; // clear after cut+paste
             Ok(format!("Moved to {}", dest.display()))
         } else {
-            // Copy (basic, for files; for dirs we could recurse but keep simple for now)
             if src.is_dir() {
-                return Err("Copying directories not yet supported in this build".to_string());
+                Self::copy_dir_all(&src, &dest)
+                    .map_err(|e| format!("Failed to copy directory: {}", e))?;
+            } else {
+                std::fs::copy(&src, &dest)
+                    .map_err(|e| format!("Failed to copy: {}", e))?;
             }
-            std::fs::copy(&src, &dest)
-                .map_err(|e| format!("Failed to copy: {}", e))?;
             Ok(format!("Copied to {}", dest.display()))
         }
     }
@@ -460,6 +495,10 @@ impl EditorView {
                     } else if let Err(e) = cx.editor.open(&path, Action::Replace) {
                         let msg = e.to_string();
                         cx.editor.set_error(msg);
+                    } else {
+                        // QoL: after successfully opening a file from the explorer,
+                        // immediately switch focus back to the buffer/editor.
+                        cx.editor.file_tree_focused = false;
                     }
                 }
                 true
@@ -475,8 +514,34 @@ impl EditorView {
                 }
                 true
             }
+            KeyCode::Char('u') => {
+                // Go up one level (change active directory)
+                tree.go_up();
+                true
+            }
+            KeyCode::Char('c') => {
+                // cd into the selected directory (set as new active/workspace root)
+                if let Some(path) = tree.selected_path().map(|p| p.to_path_buf()) {
+                    if path.is_dir() {
+                        tree.cd_to(path.clone());
+                        // Also update editor's notion of cwd for broader Helix integration (LSPs etc.)
+                        cx.editor.last_cwd = Some(path);
+                    }
+                }
+                true
+            }
             KeyCode::Char('o') | KeyCode::Char(' ') => {
-                tree.toggle_selected();
+                if let Some(path) = tree.selected_path().map(|p| p.to_path_buf()) {
+                    if path.is_dir() {
+                        tree.toggle_selected();
+                    } else if let Err(e) = cx.editor.open(&path, Action::Replace) {
+                        let msg = e.to_string();
+                        cx.editor.set_error(msg);
+                    } else {
+                        // QoL: after opening via Space, switch focus back to buffer
+                        cx.editor.file_tree_focused = false;
+                    }
+                }
                 true
             }
 
@@ -1234,13 +1299,27 @@ impl EditorView {
                 }
 
                 let is_selected = i == tree.selected;
-                let style = if is_selected {
+                let mut style = if is_selected {
                     selected_style
                 } else if entry.is_dir {
                     dir_style
                 } else {
                     text_style
                 };
+
+                // Git-aware coloring for directories (modern IDE style)
+                // Color repo roots (dirs containing .git) distinctly.
+                if entry.is_dir {
+                    let git_dir = entry.path.join(".git");
+                    if git_dir.exists() {
+                        // Prefer theme git color if available, otherwise a nice blue-ish
+                        style = theme
+                            .try_get("git.branch")
+                            .or_else(|| theme.try_get("ui.text.directory"))
+                            .unwrap_or(style)
+                            .add_modifier(Modifier::BOLD);
+                    }
+                }
 
                 // Indentation + indicator
                 let indent = "  ".repeat(entry.depth as usize);

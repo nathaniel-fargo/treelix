@@ -3272,6 +3272,7 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
 fn file_tree_toggle(cx: &mut Context) {
     cx.editor.file_tree_visible = !cx.editor.file_tree_visible;
     cx.editor.needs_redraw = true;
+    // If turning on, the EditorView will lazily create the tree on next render.
 }
 
 struct PathStyleConfig {

@@ -31,7 +31,15 @@ use helix_view::{
     keyboard::{KeyCode, KeyModifiers},
     Document, Editor, Theme, View,
 };
-use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
+use std::{
+    collections::HashSet,
+    fs,
+    mem::take,
+    num::NonZeroUsize,
+    ops,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
@@ -44,6 +52,8 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
+    /// State for the right-side file tree sidebar (treelix feature).
+    file_tree: Option<FileTree>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +67,108 @@ pub enum InsertEvent {
     RequestCompletion,
 }
 
+/// Simple persistent file tree state for the right sidebar (treelix feature).
+/// Maintains expansion state and selection. The visible list is rebuilt on demand.
+#[derive(Debug, Default)]
+pub struct FileTree {
+    pub root: PathBuf,
+    /// Paths that are expanded (directories only).
+    pub expanded: HashSet<PathBuf>,
+    /// Currently selected entry index in the flattened visible list.
+    pub selected: usize,
+    /// Last built visible entries (for rendering + interaction). Rebuilt as needed.
+    pub entries: Vec<FileEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileEntry {
+    pub path: PathBuf,
+    pub depth: u16,
+    pub is_dir: bool,
+    pub is_expanded: bool,
+}
+
+impl FileTree {
+    pub fn new(root: PathBuf) -> Self {
+        let root = helix_stdx::path::normalize(root);
+        let mut tree = Self {
+            root: root.clone(),
+            expanded: HashSet::new(),
+            selected: 0,
+            entries: Vec::new(),
+        };
+        tree.rebuild_entries();
+        tree
+    }
+
+    /// Rebuild the flat list of visible entries based on current expansion state.
+    /// Uses a simple depth-first walk (respects basic dotfile hiding).
+    pub fn rebuild_entries(&mut self) {
+        self.entries.clear();
+        let root = self.root.clone();
+        self.walk_dir(&root, 0);
+        if self.selected >= self.entries.len() && !self.entries.is_empty() {
+            self.selected = self.entries.len() - 1;
+        }
+    }
+
+    fn walk_dir(&mut self, dir: &Path, depth: u16) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            let mut children: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+            // Sort: directories first, then by name
+            children.sort_by_key(|e| (!e.path().is_dir(), e.file_name()));
+
+            for entry in children {
+                let path = entry.path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if name.starts_with('.') {
+                    continue; // basic hidden file skip for v1
+                }
+
+                let is_dir = path.is_dir();
+                let is_expanded = is_dir && self.expanded.contains(&path);
+
+                self.entries.push(FileEntry {
+                    path: path.clone(),
+                    depth,
+                    is_dir,
+                    is_expanded,
+                });
+
+                if is_dir && is_expanded {
+                    self.walk_dir(&path, depth + 1);
+                }
+            }
+        }
+    }
+
+    pub fn toggle_selected(&mut self) {
+        if let Some(entry) = self.entries.get(self.selected) {
+            if entry.is_dir {
+                if self.expanded.remove(&entry.path) {
+                    // was expanded, now collapsed
+                } else {
+                    self.expanded.insert(entry.path.clone());
+                }
+                self.rebuild_entries();
+            }
+        }
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let new = (self.selected as isize + delta)
+            .clamp(0, self.entries.len() as isize - 1) as usize;
+        self.selected = new;
+    }
+
+    pub fn selected_path(&self) -> Option<&Path> {
+        self.entries.get(self.selected).map(|e| e.path.as_path())
+    }
+}
+
 impl EditorView {
     pub fn new(keymaps: Keymaps) -> Self {
         Self {
@@ -67,6 +179,7 @@ impl EditorView {
             completion: None,
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
+            file_tree: None,
         }
     }
 
@@ -707,9 +820,7 @@ impl EditorView {
         }
     }
 
-    /// Render the file tree sidebar (stub implementation for initial integration).
-    /// Shows a static example tree on the right. Will be expanded with real FS
-    /// tree, expand/collapse, selection, file opening etc.
+    /// Render the file tree sidebar using real on-disk state.
     pub fn render_file_tree(
         &self,
         area: Rect,
@@ -733,7 +844,7 @@ impl EditorView {
                 .set_style(sep_style);
         }
 
-        // Header row background
+        // Header
         let header_bg = theme
             .try_get("ui.statusline")
             .unwrap_or_else(|| theme.get("ui.text"));
@@ -741,62 +852,81 @@ impl EditorView {
             surface[(x, area.y)].set_style(header_bg);
         }
 
-        // Title
-        let title = " Explorer ";
         let title_style = theme.get("ui.text");
-        if area.width > title.len() as u16 + 2 {
-            surface.set_string(area.x + 1, area.y, title, title_style);
-        }
+        let title = " 󰙅 Explorer "; // or " Explorer " if no nerd font
+        surface.set_stringn(
+            area.x + 1,
+            area.y,
+            title,
+            (area.width.saturating_sub(2)) as usize,
+            title_style,
+        );
 
-        // Stub tree content (hardcoded to demonstrate layout; real impl will be dynamic)
         let text_style = theme.get("ui.text");
         let dir_style = theme.get("ui.text.directory");
-        let dim_style = theme
-            .try_get("ui.text.dim")
-            .unwrap_or_else(|| text_style);
+        let selected_style = theme
+            .try_get("ui.menu.selected")
+            .unwrap_or_else(|| theme.get("ui.text").add_modifier(Modifier::REVERSED));
 
         let mut row = area.y + 1;
         let end_row = area.bottom().saturating_sub(1);
 
-        let stub_lines: &[(&str, bool)] = &[
-            ("▶ helix-term", true),
-            ("  ▶ src", true),
-            ("    ui", false),
-            ("    commands.rs", false),
-            ("▶ helix-view", true),
-            ("  src", false),
-            ("  editor.rs", false),
-            (".github", false),
-            ("Cargo.toml", false),
-            ("README.md", false),
-        ];
+        if let Some(tree) = &self.file_tree {
+            for (i, entry) in tree.entries.iter().enumerate() {
+                if row >= end_row {
+                    break;
+                }
 
-        for (name, is_dir) in stub_lines {
-            if row >= end_row {
-                break;
+                let is_selected = i == tree.selected;
+                let style = if is_selected {
+                    selected_style
+                } else if entry.is_dir {
+                    dir_style
+                } else {
+                    text_style
+                };
+
+                // Indentation + indicator
+                let indent = "  ".repeat(entry.depth as usize);
+                let indicator = if entry.is_dir {
+                    if entry.is_expanded { "▾ " } else { "▸ " }
+                } else {
+                    "  "
+                };
+
+                let name = entry
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default();
+
+                let display = format!("{}{}{}", indent, indicator, name);
+                surface.set_stringn(
+                    area.x + 1,
+                    row,
+                    &display,
+                    (area.width.saturating_sub(2)) as usize,
+                    style,
+                );
+                row += 1;
             }
-            let style = if *is_dir { dir_style } else { text_style };
-            // simple indent + bullet
-            let prefix = if *is_dir { "▸ " } else { "  " };
-            let display = format!("{}{}", prefix, name);
-            surface.set_stringn(
-                area.x + 1,
-                row,
-                &display,
-                (area.width.saturating_sub(2)) as usize,
-                style,
-            );
-            row += 1;
-        }
 
-        // WIP footer note at bottom of panel
-        if area.height > 6 {
-            let note = "[tree view WIP]";
+            // Small status line at bottom of the panel
+            if area.height > 5 && !tree.entries.is_empty() {
+                let status = format!(" {} items ", tree.entries.len());
+                surface.set_string(
+                    area.x + 1,
+                    area.bottom().saturating_sub(1),
+                    &status,
+                    theme.get("ui.text.dim"),
+                );
+            }
+        } else {
             surface.set_string(
                 area.x + 1,
-                area.bottom().saturating_sub(1),
-                note,
-                dim_style,
+                area.y + 1,
+                " (initializing...)",
+                text_style,
             );
         }
     }
@@ -1733,6 +1863,19 @@ impl Component for EditorView {
 
         // Render file tree sidebar (right) if enabled. It spans the content height.
         if sidebar_width > 0 {
+            // Lazily initialize the file tree state the first time the sidebar is shown.
+            if self.file_tree.is_none() {
+                let root = helix_stdx::env::current_working_dir();
+                self.file_tree = Some(FileTree::new(root));
+            }
+
+            if let Some(tree) = &mut self.file_tree {
+                // Rebuild if the root no longer exists or on first use.
+                if tree.entries.is_empty() {
+                    tree.rebuild_entries();
+                }
+            }
+
             let mut sidebar_area = area.clip_bottom(1);
             if use_bufferline {
                 sidebar_area = sidebar_area.clip_top(1);

@@ -2,6 +2,8 @@
 
 Contributors are very welcome! **No contribution is too small and all contributions are valued.**
 
+> **treelix note**: This is a fork of Helix with a built-in file tree sidebar. Most contributions should still target upstream [helix-editor/helix](https://github.com/helix-editor/helix) unless they are specific to the tree view enhancements.
+
 Some suggestions to get started:
 
 - You can look at the [good first issue][good-first-issue] label on the issue tracker.

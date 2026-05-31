@@ -4,17 +4,19 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="logo_dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="logo_light.svg">
-  <img alt="Helix" height="128" src="logo_light.svg">
+  <img alt="treelix" height="128" src="logo_light.svg">
 </picture>
 </h1>
 
-[![Build status](https://github.com/helix-editor/helix/actions/workflows/build.yml/badge.svg)](https://github.com/helix-editor/helix/actions)
-[![GitHub Release](https://img.shields.io/github/v/release/helix-editor/helix)](https://github.com/helix-editor/helix/releases/latest)
+**treelix** — A post-modern modal text editor (Helix fork) with a built-in nvim-tree style file explorer sidebar.
+
+[![GitHub Repo](https://img.shields.io/badge/repo-treelix-blue)](https://github.com/nathaniel-fargo/treelix)
+[![Build status](https://github.com/nathaniel-fargo/treelix/actions/workflows/build.yml/badge.svg)](https://github.com/nathaniel-fargo/treelix/actions)
 [![Documentation](https://shields.io/badge/-documentation-452859)](https://docs.helix-editor.com/)
-[![GitHub contributors](https://img.shields.io/github/contributors/helix-editor/helix)](https://github.com/helix-editor/helix/graphs/contributors)
-[![Matrix Space](https://img.shields.io/matrix/helix-community:matrix.org)](https://matrix.to/#/#helix-community:matrix.org)
 
 </div>
+
+> **Note:** This is a personal fork of [Helix](https://github.com/helix-editor/helix) focused on adding a persistent file tree sidebar (right side, nvim-tree inspired). Most features and keybindings remain identical to upstream Helix.
 
 ![Screenshot](./screenshot.png)
 
@@ -36,6 +38,9 @@ All shortcuts/keymaps can be found [in the documentation on the website](https:/
 - Multiple selections
 - Built-in language server support
 - Smart, incremental syntax highlighting and code editing via tree-sitter
+- **Built-in file tree sidebar** (toggle with `Space`+`E`, nvim-tree inspired — right side, respects .gitignore, expand/collapse, open files)
+
+> The file tree is a core feature of this treelix fork (not present in upstream Helix).
 
 Although it's primarily a terminal-based editor, I am interested in exploring
 a custom renderer (similar to Emacs) using wgpu.
@@ -57,7 +62,7 @@ Contributing guidelines can be found [here](./docs/CONTRIBUTING.md).
 
 Your question might already be answered on the [FAQ](https://github.com/helix-editor/helix/wiki/FAQ).
 
-Discuss the project on the community [Matrix Space](https://matrix.to/#/#helix-community:matrix.org) (make sure to join `#helix-editor:matrix.org` if you're on a client that doesn't support Matrix Spaces yet).
+Discuss upstream Helix on the community [Matrix Space](https://matrix.to/#/#helix-community:matrix.org). This treelix fork is a personal experiment — feel free to open issues/PRs here for the file tree enhancements.
 
 # Credits
 

@@ -79,6 +79,12 @@ pub struct FileTree {
     pub selected: usize,
     /// Last built visible entries (for rendering + interaction). Rebuilt as needed.
     pub entries: Vec<FileEntry>,
+
+    /// For cut/copy + paste operations (yank style, yazi/vim inspired)
+    pub clipboard: Option<(PathBuf, bool)>, // (path, is_cut)
+
+    /// Temporary input/confirm mode for create, rename, delete
+    pub input_mode: Option<InputMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +95,13 @@ pub struct FileEntry {
     pub is_expanded: bool,
 }
 
+#[derive(Debug, Clone)]
+enum InputMode {
+    Create { name: String },
+    Rename { original_path: PathBuf, name: String },
+    ConfirmDelete { path: PathBuf },
+}
+
 impl FileTree {
     pub fn new(root: PathBuf) -> Self {
         let root = helix_stdx::path::normalize(root);
@@ -97,6 +110,8 @@ impl FileTree {
             expanded: HashSet::new(),
             selected: 0,
             entries: Vec::new(),
+            clipboard: None,
+            input_mode: None,
         };
         tree.rebuild_entries();
         tree
@@ -168,6 +183,180 @@ impl FileTree {
     pub fn selected_path(&self) -> Option<&Path> {
         self.entries.get(self.selected).map(|e| e.path.as_path())
     }
+
+    /// Returns the directory context for operations like create/paste.
+    /// If selected item is a dir, use it; otherwise use its parent.
+    fn operation_target_dir(&self) -> Option<PathBuf> {
+        let entry = self.entries.get(self.selected)?;
+        if entry.is_dir {
+            Some(entry.path.clone())
+        } else {
+            entry.path.parent().map(|p| p.to_path_buf())
+        }
+    }
+
+    pub fn yank_cut(&mut self) {
+        if let Some(path) = self.selected_path() {
+            self.clipboard = Some((path.to_path_buf(), true));
+        }
+    }
+
+    pub fn yank_copy(&mut self) {
+        if let Some(path) = self.selected_path() {
+            self.clipboard = Some((path.to_path_buf(), false));
+        }
+    }
+
+    /// Perform paste into the current operation target dir.
+    /// Returns a status message or error.
+    pub fn paste(&mut self) -> Result<String, String> {
+        let (src, is_cut) = match &self.clipboard {
+            Some(c) => c.clone(),
+            None => return Err("Nothing to paste".to_string()),
+        };
+
+        let target_dir = self.operation_target_dir().ok_or("No target directory")?;
+
+        if !target_dir.is_dir() {
+            return Err("Target is not a directory".to_string());
+        }
+
+        let file_name = src.file_name().ok_or("Invalid source name")?;
+        let dest = target_dir.join(file_name);
+
+        if dest.exists() {
+            return Err(format!("Destination already exists: {}", dest.display()));
+        }
+
+        if is_cut {
+            std::fs::rename(&src, &dest)
+                .map_err(|e| format!("Failed to move: {}", e))?;
+            self.clipboard = None; // clear after cut+paste
+            Ok(format!("Moved to {}", dest.display()))
+        } else {
+            // Copy (basic, for files; for dirs we could recurse but keep simple for now)
+            if src.is_dir() {
+                return Err("Copying directories not yet supported in this build".to_string());
+            }
+            std::fs::copy(&src, &dest)
+                .map_err(|e| format!("Failed to copy: {}", e))?;
+            Ok(format!("Copied to {}", dest.display()))
+        }
+    }
+
+    pub fn start_create(&mut self) {
+        self.input_mode = Some(InputMode::Create { name: String::new() });
+    }
+
+    pub fn start_rename(&mut self) {
+        if let Some(path) = self.selected_path() {
+            let name = path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.input_mode = Some(InputMode::Rename {
+                original_path: path.to_path_buf(),
+                name,
+            });
+        }
+    }
+
+    pub fn start_delete_confirm(&mut self) {
+        if let Some(path) = self.selected_path() {
+            self.input_mode = Some(InputMode::ConfirmDelete { path: path.to_path_buf() });
+        }
+    }
+
+    /// Handle character input while in an input_mode (create/rename).
+    /// Returns true if the input was handled.
+    pub fn handle_input_char(&mut self, c: char) -> bool {
+        match &mut self.input_mode {
+            Some(InputMode::Create { name }) | Some(InputMode::Rename { name, .. }) => {
+                if c == '\n' || c == '\r' {
+                    false // let caller handle commit
+                } else if c == '\u{7f}' || c == '\u{8}' { // backspace
+                    name.pop();
+                    true
+                } else if !c.is_control() {
+                    name.push(c);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Commit the current input mode action.
+    /// Returns status message.
+    pub fn commit_input(&mut self) -> Result<String, String> {
+        match self.input_mode.take() {
+            Some(InputMode::Create { name }) => {
+                if name.is_empty() {
+                    return Err("Name cannot be empty".to_string());
+                }
+                let target_dir = self.operation_target_dir().ok_or("No target dir")?;
+                let path = target_dir.join(&name);
+
+                if path.exists() {
+                    return Err("Already exists".to_string());
+                }
+
+                if name.ends_with('/') || name.ends_with(std::path::MAIN_SEPARATOR) {
+                    // create dir
+                    std::fs::create_dir_all(&path)
+                        .map_err(|e| e.to_string())?;
+                    self.expanded.insert(path.clone());
+                    Ok(format!("Created directory {}", path.display()))
+                } else {
+                    // create file (and parent dirs if needed)
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    std::fs::write(&path, "").map_err(|e| e.to_string())?;
+                    Ok(format!("Created file {}", path.display()))
+                }
+            }
+            Some(InputMode::Rename { original_path, name }) => {
+                if name.is_empty() {
+                    return Err("Name cannot be empty".to_string());
+                }
+                let new_path = original_path.parent()
+                    .map(|p| p.join(&name))
+                    .unwrap_or_else(|| PathBuf::from(&name));
+
+                if new_path.exists() {
+                    return Err("Target already exists".to_string());
+                }
+
+                std::fs::rename(&original_path, &new_path)
+                    .map_err(|e| e.to_string())?;
+
+                // Update expanded if it was a dir
+                if self.expanded.remove(&original_path) {
+                    self.expanded.insert(new_path.clone());
+                }
+
+                Ok(format!("Renamed to {}", new_path.display()))
+            }
+            Some(InputMode::ConfirmDelete { path }) => {
+                // This is called on 'y'
+                if path.is_dir() {
+                    std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+                } else {
+                    std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+                }
+                // Clean up expanded
+                self.expanded.remove(&path);
+                Ok(format!("Deleted {}", path.display()))
+            }
+            None => Err("No input to commit".to_string()),
+        }
+    }
+
+    pub fn cancel_input(&mut self) {
+        self.input_mode = None;
+    }
 }
 
 impl EditorView {
@@ -200,10 +389,57 @@ impl EditorView {
             _ => return false,
         };
 
+        // If we're in an input/confirm mode, handle it specially
+        if tree.input_mode.is_some() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if matches!(tree.input_mode, Some(InputMode::ConfirmDelete { .. })) {
+                        match tree.commit_input() {
+                            Ok(msg) => cx.editor.set_status(msg),
+                            Err(e) => cx.editor.set_error(e),
+                        }
+                        tree.rebuild_entries();
+                    }
+                    return true;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    tree.cancel_input();
+                    return true;
+                }
+                KeyCode::Enter => {
+                    match tree.commit_input() {
+                        Ok(msg) => cx.editor.set_status(msg),
+                        Err(e) => cx.editor.set_error(e),
+                    }
+                    tree.rebuild_entries();
+                    return true;
+                }
+                KeyCode::Char(c) => {
+                    if tree.handle_input_char(c) {
+                        return true;
+                    }
+                }
+                KeyCode::Backspace => {
+                    if tree.handle_input_char('\u{8}') {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            return true; // consume everything while in input mode
+        }
+
         // Unfocus / return to main editor (works like dismissing a popover)
         if (key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL))
             || matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
         {
+            cx.editor.file_tree_focused = false;
+            return true;
+        }
+
+        // 'E' (Space+E or direct) while focused closes the explorer entirely
+        if key.code == KeyCode::Char('E') {
+            cx.editor.file_tree_visible = false;
             cx.editor.file_tree_focused = false;
             return true;
         }
@@ -241,6 +477,51 @@ impl EditorView {
             }
             KeyCode::Char('o') | KeyCode::Char(' ') => {
                 tree.toggle_selected();
+                true
+            }
+
+            // === File operations (vim + yazi inspired) ===
+            KeyCode::Char('a') => {
+                tree.start_create();
+                true
+            }
+            KeyCode::Char('r') => {
+                tree.start_rename();
+                true
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                tree.start_delete_confirm();
+                true
+            }
+            KeyCode::Char('x') => {
+                tree.yank_cut();
+                if let Some((p, _)) = &tree.clipboard {
+                    cx.editor.set_status(format!("Cut: {}", p.display()));
+                }
+                true
+            }
+            KeyCode::Char('y') => {
+                tree.yank_copy();
+                if let Some((p, _)) = &tree.clipboard {
+                    cx.editor.set_status(format!("Copied: {}", p.display()));
+                }
+                true
+            }
+            KeyCode::Char('p') => {
+                match tree.paste() {
+                    Ok(msg) => {
+                        cx.editor.set_status(msg);
+                        tree.rebuild_entries();
+                    }
+                    Err(e) => cx.editor.set_error(e),
+                }
+                true
+            }
+
+            KeyCode::Char('q') | KeyCode::Esc => {
+                // Esc / q while in the tree: return focus to the main editor.
+                // The tree remains visible on the left. Use Space+E (or C-e) to manage it.
+                cx.editor.file_tree_focused = false;
                 true
             }
             _ => false,
@@ -995,6 +1276,32 @@ impl EditorView {
                     &status,
                     theme.get("ui.text.dim"),
                 );
+            }
+
+            // Render input / confirm bar at the very bottom when active (create, rename, delete confirm)
+            if let Some(mode) = &tree.input_mode {
+                if area.height > 3 {
+                    let prompt_line = area.bottom().saturating_sub(2);
+                    let prompt_style = theme.get("ui.text");
+
+                    let prompt_line_text = match mode {
+                        InputMode::Create { name } => format!(" create: {}▌", name),
+                        InputMode::Rename { name, .. } => format!(" rename: {}▌", name),
+                        InputMode::ConfirmDelete { path } => {
+                            let short = path.file_name()
+                                .map(|n| n.to_string_lossy())
+                                .unwrap_or_default();
+                            format!(" delete {} ? (y/n)", short)
+                        }
+                    };
+
+                    surface.set_string(
+                        area.x + 1,
+                        prompt_line,
+                        &prompt_line_text,
+                        prompt_style,
+                    );
+                }
             }
         } else {
             surface.set_string(

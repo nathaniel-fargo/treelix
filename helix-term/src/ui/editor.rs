@@ -196,6 +196,11 @@ impl EditorView {
             _ => return false,
         };
 
+        // Auto-focus the tree when user starts navigating it
+        if !cx.editor.file_tree_focused {
+            cx.editor.file_tree_focused = true;
+        }
+
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 tree.move_selection(1);
@@ -212,9 +217,6 @@ impl EditorView {
                     } else if let Err(e) = cx.editor.open(&path, Action::Replace) {
                         let msg = e.to_string();
                         cx.editor.set_error(msg);
-                    } else {
-                        // Successfully opened a file — optionally hide the tree
-                        // cx.editor.file_tree_visible = false;
                     }
                 }
                 true
@@ -225,8 +227,7 @@ impl EditorView {
                         tree.expanded.remove(&path);
                         tree.rebuild_entries();
                     } else {
-                        // collapse parent if possible (simple version)
-                        tree.move_selection(-1); // naive
+                        tree.move_selection(-1);
                     }
                 }
                 true
@@ -236,7 +237,9 @@ impl EditorView {
                 true
             }
             KeyCode::Char('q') | KeyCode::Esc => {
-                cx.editor.file_tree_visible = false;
+                // Esc / q while in the tree: return focus to the main editor.
+                // The tree remains visible on the left. Use Space+E to hide it completely.
+                cx.editor.file_tree_focused = false;
                 true
             }
             _ => false,
@@ -876,7 +879,8 @@ impl EditorView {
         }
     }
 
-    /// Render the file tree sidebar using real on-disk state.
+    /// Render the file tree sidebar (now on the left) using real on-disk state.
+    /// Shows focus state in the header when the tree has input focus.
     pub fn render_file_tree(
         &self,
         area: Rect,
@@ -891,29 +895,43 @@ impl EditorView {
         let bg_style = theme.get("ui.background");
         surface.set_style(area, bg_style);
 
-        // Left separator line (between editor and tree)
+        // Separator line on the right side of the tree (between tree and main editor)
         let sep_style = theme.get("ui.window");
-        let sep_x = area.x;
+        let sep_x = area.right().saturating_sub(1);
         for y in area.y..area.bottom() {
             surface[(sep_x, y)]
                 .set_symbol(tui::symbols::line::VERTICAL)
                 .set_style(sep_style);
         }
 
-        // Header
-        let header_bg = theme
-            .try_get("ui.statusline")
-            .unwrap_or_else(|| theme.get("ui.text"));
+        // Header - different style when the tree has focus
+        let is_focused = cx.editor.file_tree_focused;
+        let header_bg = if is_focused {
+            theme
+                .try_get("ui.statusline.active")
+                .unwrap_or_else(|| theme.get("ui.statusline"))
+        } else {
+            theme
+                .try_get("ui.statusline")
+                .unwrap_or_else(|| theme.get("ui.text"))
+        };
         for x in area.x..area.right() {
             surface[(x, area.y)].set_style(header_bg);
         }
 
-        let title_style = theme.get("ui.text");
-        let title = " 󰙅 Explorer "; // or " Explorer " if no nerd font
+        let title_style = if is_focused {
+            theme
+                .try_get("ui.statusline.active")
+                .unwrap_or_else(|| theme.get("ui.text"))
+        } else {
+            theme.get("ui.text")
+        };
+        let focus_marker = if is_focused { "● " } else { "" };
+        let title = format!(" {}󰙅 Explorer ", focus_marker);
         surface.set_stringn(
             area.x + 1,
             area.y,
-            title,
+            &title,
             (area.width.saturating_sub(2)) as usize,
             title_style,
         );
@@ -1754,9 +1772,28 @@ impl Component for EditorView {
                 // clear status
                 cx.editor.status_msg = None;
 
-                // File tree sidebar key handling (treelix) — takes precedence when visible
+                // File tree sidebar key handling (treelix)
+                // - If tree is focused: normal tree navigation
+                // - If tree is visible but not focused: certain tree keys (j/k etc) will
+                //   auto-focus the tree so users can easily jump in.
                 if cx.editor.file_tree_visible {
-                    if self.handle_file_tree_key(&mut cx, key) {
+                    let should_handle = cx.editor.file_tree_focused
+                        || matches!(
+                            key.code,
+                            KeyCode::Char('j')
+                                | KeyCode::Char('k')
+                                | KeyCode::Down
+                                | KeyCode::Up
+                                | KeyCode::Char('h')
+                                | KeyCode::Char('l')
+                                | KeyCode::Left
+                                | KeyCode::Right
+                                | KeyCode::Enter
+                                | KeyCode::Char(' ')
+                                | KeyCode::Char('o')
+                        );
+
+                    if should_handle && self.handle_file_tree_key(&mut cx, key) {
                         cx.editor.needs_redraw = true;
                         return EventResult::Consumed(None);
                     }
@@ -1902,15 +1939,15 @@ impl Component for EditorView {
             editor_area = editor_area.clip_top(1);
         }
 
-        // Reserve space for file tree sidebar on the right (if visible).
-        // The split tree (editor_area) is sized to the remaining left portion.
+        // Reserve space for file tree sidebar on the left (if visible).
+        // The split tree (editor_area) is sized to the remaining right portion.
         let sidebar_width = if cx.editor.file_tree_visible {
             config.file_tree.width.min(editor_area.width.saturating_sub(20))
         } else {
             0
         };
         if sidebar_width > 0 {
-            editor_area = editor_area.clip_right(sidebar_width);
+            editor_area = editor_area.clip_left(sidebar_width);
         }
 
         // if the terminal size suddenly changed, we need to trigger a resize
@@ -1918,14 +1955,14 @@ impl Component for EditorView {
 
         if use_bufferline {
             let buf_area = if sidebar_width > 0 {
-                area.with_height(1).clip_right(sidebar_width)
+                area.with_height(1).clip_left(sidebar_width)
             } else {
                 area.with_height(1)
             };
             Self::render_bufferline(cx.editor, buf_area, surface);
         }
 
-        // Render file tree sidebar (right) if enabled. It spans the content height.
+        // Render file tree sidebar (left) if enabled. It spans the content height.
         if sidebar_width > 0 {
             // Lazily initialize the file tree state the first time the sidebar is shown.
             if self.file_tree.is_none() {
@@ -1944,7 +1981,8 @@ impl Component for EditorView {
             if use_bufferline {
                 sidebar_area = sidebar_area.clip_top(1);
             }
-            sidebar_area = sidebar_area.clip_left(area.width.saturating_sub(sidebar_width));
+            // Take the left portion for the sidebar
+            sidebar_area = sidebar_area.with_width(sidebar_width);
             self.render_file_tree(sidebar_area, surface, cx);
         }
 

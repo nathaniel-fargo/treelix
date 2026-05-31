@@ -406,7 +406,8 @@ impl MappableCommand {
         file_explorer, "Open file explorer in workspace root",
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
-        file_tree_toggle, "Toggle file tree sidebar (right side, nvim-tree style)",
+        file_tree_toggle, "Toggle file tree sidebar visibility",
+        file_tree_focus, "Toggle focus between file tree and main editor (when tree is visible)",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
@@ -3267,12 +3268,26 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
     }
 }
 
-/// Toggle visibility of the persistent file tree sidebar (nvim-tree like)
-/// on the right side of the editor.
+/// Toggle visibility of the persistent file tree sidebar (left side, nvim-tree style).
 fn file_tree_toggle(cx: &mut Context) {
     cx.editor.file_tree_visible = !cx.editor.file_tree_visible;
+    if cx.editor.file_tree_visible {
+        cx.editor.file_tree_focused = true;
+    } else {
+        cx.editor.file_tree_focused = false;
+    }
     cx.editor.needs_redraw = true;
-    // If turning on, the EditorView will lazily create the tree on next render.
+}
+
+/// Toggle focus between the file tree sidebar and the main editor area.
+/// The tree must be visible (use file-tree-toggle / Space+E to show it first).
+fn file_tree_focus(cx: &mut Context) {
+    if !cx.editor.file_tree_visible {
+        cx.editor.set_error("File tree is not visible (use Space+E to toggle)");
+        return;
+    }
+    cx.editor.file_tree_focused = !cx.editor.file_tree_focused;
+    cx.editor.needs_redraw = true;
 }
 
 struct PathStyleConfig {

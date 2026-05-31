@@ -1891,10 +1891,12 @@ impl EditorView {
             if let Some(rect) = sidebar_rect_opt {
                 if cxt.editor.file_tree_visible {
                     if let Some(tree) = &mut self.file_tree {
+                        // Any mouse activity inside the explorer focuses the explorer
+                        // (this is the requested behavior: click in explorer → focus explorer)
+                        cxt.editor.file_tree_focused = true;
+
                         // Inline the simple mouse logic here to avoid borrow conflicts with &mut self
                         if event.kind == MouseEventKind::Down(MouseButton::Left) {
-                            cxt.editor.file_tree_focused = true;
-
                             let content_start_y = rect.y + 1;
                             if event.row >= content_start_y {
                                 let relative_row = (event.row - content_start_y) as usize;
@@ -1907,6 +1909,7 @@ impl EditorView {
                                     } else if let Err(e) = cxt.editor.open(&entry.path, Action::Replace) {
                                         cxt.editor.set_error(e.to_string());
                                     } else {
+                                        // After opening a file via mouse, transfer focus back to the buffer
                                         cxt.editor.file_tree_focused = false;
                                     }
                                 }

@@ -25,6 +25,7 @@ use helix_core::{
 use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
     document::{Mode, SCRATCH_BUFFER_NAME},
+    editor::Action,
     editor::{CompleteAction, CursorShapeConfig},
     graphics::{Color, CursorKind, Modifier, Rect, Style},
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
@@ -185,6 +186,61 @@ impl EditorView {
 
     pub fn spinners_mut(&mut self) -> &mut ProgressSpinners {
         &mut self.spinners
+    }
+
+    /// Handle keys while the file tree sidebar is visible.
+    /// Returns true if the key was consumed by the tree.
+    fn handle_file_tree_key(&mut self, cx: &mut commands::Context, key: KeyEvent) -> bool {
+        let tree = match &mut self.file_tree {
+            Some(t) if cx.editor.file_tree_visible => t,
+            _ => return false,
+        };
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                tree.move_selection(1);
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                tree.move_selection(-1);
+                true
+            }
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+                if let Some(path) = tree.selected_path().map(|p| p.to_path_buf()) {
+                    if path.is_dir() {
+                        tree.toggle_selected();
+                    } else if let Err(e) = cx.editor.open(&path, Action::Replace) {
+                        let msg = e.to_string();
+                        cx.editor.set_error(msg);
+                    } else {
+                        // Successfully opened a file — optionally hide the tree
+                        // cx.editor.file_tree_visible = false;
+                    }
+                }
+                true
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                if let Some(path) = tree.selected_path().map(|p| p.to_path_buf()) {
+                    if path.is_dir() && tree.expanded.contains(&path) {
+                        tree.expanded.remove(&path);
+                        tree.rebuild_entries();
+                    } else {
+                        // collapse parent if possible (simple version)
+                        tree.move_selection(-1); // naive
+                    }
+                }
+                true
+            }
+            KeyCode::Char(' ') | KeyCode::Char('o') => {
+                tree.toggle_selected();
+                true
+            }
+            KeyCode::Char('q') | KeyCode::Esc => {
+                cx.editor.file_tree_visible = false;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn render_view(
@@ -1697,6 +1753,14 @@ impl Component for EditorView {
 
                 // clear status
                 cx.editor.status_msg = None;
+
+                // File tree sidebar key handling (treelix) — takes precedence when visible
+                if cx.editor.file_tree_visible {
+                    if self.handle_file_tree_key(&mut cx, key) {
+                        cx.editor.needs_redraw = true;
+                        return EventResult::Consumed(None);
+                    }
+                }
 
                 let mode = cx.editor.mode();
 

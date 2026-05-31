@@ -53,8 +53,10 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
-    /// State for the right-side file tree sidebar (treelix feature).
+    /// State for the left-side file tree sidebar (treelix feature).
     file_tree: Option<FileTree>,
+    /// Last known rect of the file tree sidebar (for mouse hit testing).
+    last_sidebar_rect: Option<Rect>,
 }
 
 #[derive(Debug, Clone)]
@@ -405,6 +407,7 @@ impl EditorView {
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
             file_tree: None,
+            last_sidebar_rect: None,
         }
     }
 
@@ -492,12 +495,12 @@ impl EditorView {
                 if let Some(path) = tree.selected_path().map(|p| p.to_path_buf()) {
                     if path.is_dir() {
                         tree.toggle_selected();
-                    } else if let Err(e) = cx.editor.open(&path, Action::Replace) {
-                        let msg = e.to_string();
-                        cx.editor.set_error(msg);
                     } else {
-                        // QoL: after successfully opening a file from the explorer,
-                        // immediately switch focus back to the buffer/editor.
+                        // File: always attempt to transfer focus to buffer after open attempt
+                        if let Err(e) = cx.editor.open(&path, Action::Replace) {
+                            cx.editor.set_error(e.to_string());
+                        }
+                        // Unfocus even on error so user can see the buffer state
                         cx.editor.file_tree_focused = false;
                     }
                 }
@@ -534,10 +537,10 @@ impl EditorView {
                 if let Some(path) = tree.selected_path().map(|p| p.to_path_buf()) {
                     if path.is_dir() {
                         tree.toggle_selected();
-                    } else if let Err(e) = cx.editor.open(&path, Action::Replace) {
-                        let msg = e.to_string();
-                        cx.editor.set_error(msg);
                     } else {
+                        if let Err(e) = cx.editor.open(&path, Action::Replace) {
+                            cx.editor.set_error(e.to_string());
+                        }
                         // QoL: after opening via Space, switch focus back to buffer
                         cx.editor.file_tree_focused = false;
                     }
@@ -1874,6 +1877,48 @@ impl EditorView {
             self.handle_non_key_input(cxt)
         }
 
+        // File tree sidebar mouse support (click to select/toggle/open + focus transfer)
+        let click_in_sidebar = self.last_sidebar_rect.map_or(false, |r| {
+            cxt.editor.file_tree_visible
+                && event.column >= r.x
+                && event.column < r.x + r.width
+                && event.row >= r.y
+                && event.row < r.y + r.height
+        });
+
+        let sidebar_rect_opt = self.last_sidebar_rect;
+        if click_in_sidebar {
+            if let Some(rect) = sidebar_rect_opt {
+                if cxt.editor.file_tree_visible {
+                    if let Some(tree) = &mut self.file_tree {
+                        // Inline the simple mouse logic here to avoid borrow conflicts with &mut self
+                        if event.kind == MouseEventKind::Down(MouseButton::Left) {
+                            cxt.editor.file_tree_focused = true;
+
+                            let content_start_y = rect.y + 1;
+                            if event.row >= content_start_y {
+                                let relative_row = (event.row - content_start_y) as usize;
+                                if relative_row < tree.entries.len() {
+                                    tree.selected = relative_row;
+                                    let entry = &tree.entries[relative_row];
+
+                                    if entry.is_dir {
+                                        tree.toggle_selected();
+                                    } else if let Err(e) = cxt.editor.open(&entry.path, Action::Replace) {
+                                        cxt.editor.set_error(e.to_string());
+                                    } else {
+                                        cxt.editor.file_tree_focused = false;
+                                    }
+                                }
+                            }
+                            cxt.editor.needs_redraw = true;
+                            return EventResult::Consumed(None);
+                        }
+                    }
+                }
+            }
+        }
+
         let config = cxt.editor.config();
         let MouseEvent {
             kind,
@@ -2385,7 +2430,10 @@ impl Component for EditorView {
             }
             // Take the left portion for the sidebar
             sidebar_area = sidebar_area.with_width(sidebar_width);
+            self.last_sidebar_rect = Some(sidebar_area);
             self.render_file_tree(sidebar_area, surface, cx);
+        } else {
+            self.last_sidebar_rect = None;
         }
 
         for (view, is_focused) in cx.editor.tree.views() {

@@ -196,7 +196,14 @@ impl EditorView {
             _ => return false,
         };
 
-        // Auto-focus the tree when user starts navigating it
+        // Ctrl+e always toggles focus between tree and main editor.
+        // This is the primary way to jump in/out and works from both sides.
+        if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            cx.editor.file_tree_focused = !cx.editor.file_tree_focused;
+            return true;
+        }
+
+        // Auto-focus the tree when user starts navigating it with movement keys
         if !cx.editor.file_tree_focused {
             cx.editor.file_tree_focused = true;
         }
@@ -232,13 +239,15 @@ impl EditorView {
                 }
                 true
             }
-            KeyCode::Char(' ') | KeyCode::Char('o') => {
+            KeyCode::Char('o') => {
+                // 'o' toggles expand/collapse for directories (Space no longer does this
+                // so that the leader key still works while the tree has focus).
                 tree.toggle_selected();
                 true
             }
             KeyCode::Char('q') | KeyCode::Esc => {
                 // Esc / q while in the tree: return focus to the main editor.
-                // The tree remains visible on the left. Use Space+E to hide it completely.
+                // The tree remains visible on the left. Use Space+E (or C-e) to manage it.
                 cx.editor.file_tree_focused = false;
                 true
             }
@@ -1777,6 +1786,9 @@ impl Component for EditorView {
                 // - If tree is visible but not focused: certain tree keys (j/k etc) will
                 //   auto-focus the tree so users can easily jump in.
                 if cx.editor.file_tree_visible {
+                    let is_ctrl_e = key.code == KeyCode::Char('e')
+                        && key.modifiers.contains(KeyModifiers::CONTROL);
+
                     let should_handle = cx.editor.file_tree_focused
                         || matches!(
                             key.code,
@@ -1789,9 +1801,9 @@ impl Component for EditorView {
                                 | KeyCode::Left
                                 | KeyCode::Right
                                 | KeyCode::Enter
-                                | KeyCode::Char(' ')
                                 | KeyCode::Char('o')
-                        );
+                        )
+                        || is_ctrl_e;
 
                     if should_handle && self.handle_file_tree_key(&mut cx, key) {
                         cx.editor.needs_redraw = true;

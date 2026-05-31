@@ -407,7 +407,7 @@ impl MappableCommand {
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         file_tree_toggle, "Toggle file tree sidebar visibility",
-        file_tree_focus, "Toggle focus between file tree and main editor (when tree is visible)",
+        file_tree_focus, "Toggle focus between file tree (left) and main editor (Ctrl+e)",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
@@ -3280,7 +3280,8 @@ fn file_tree_toggle(cx: &mut Context) {
 }
 
 /// Toggle focus between the file tree sidebar and the main editor area.
-/// The tree must be visible (use file-tree-toggle / Space+E to show it first).
+/// Use Ctrl+e (works even when the tree already has focus).
+/// The tree must be visible (use file-tree-toggle / Space+E to show/hide it).
 fn file_tree_focus(cx: &mut Context) {
     if !cx.editor.file_tree_visible {
         cx.editor.set_error("File tree is not visible (use Space+E to toggle)");

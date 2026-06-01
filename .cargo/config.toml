@@ -14,6 +14,9 @@ rustflags = ["--cfg", "tokio_unstable", "-C", "target-feature=-crt-static"]
 [alias]
 xtask = "run --package xtask --"
 integration-test = "test --features integration --profile integration --workspace --test integration"
-# Convenient way to get a release build placed in your personal tools/bin as "helix"
+# Full "packaged" install of your custom build following the official guide.
+# This sets HELIX_DEFAULT_RUNTIME at build time + copies the runtime next to the binary,
+# so `helix` (in tools/bin) works like a normal install (colors, LSP, queries, etc.)
+# without needing to set HELIX_RUNTIME every time.
 rbuild = ["xtask", "install"]
 

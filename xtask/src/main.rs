@@ -94,38 +94,83 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
                                    languages, or all languages if none are specified.
         theme-check [themes]       Check that the theme files in runtime/themes/ are valid for the
                                    given themes, or all themes if none are specified.
-        install                    Build release and place the binary in ../bin/helix (for your tools collection).
+        install                    Build a release 'helix' binary + runtime in ../bin/ following
+                                   the official packaging guide (sets HELIX_DEFAULT_RUNTIME so
+                                   it works like a normal install without needing HELIX_RUNTIME).
 "
         );
     }
 
     pub fn install() -> Result<(), DynError> {
-        println!("Building release version of helix-term...");
-        let status = std::process::Command::new("cargo")
-            .args(["build", "--release", "-p", "helix-term"])
+        let bin_dir = std::path::PathBuf::from("../bin");
+        let runtime_target = bin_dir.join("runtime");
+        let binary_target = bin_dir.join("helix");
+
+        // Compute absolute path for HELIX_DEFAULT_RUNTIME (this gets baked into the binary
+        // at compile time via std::option_env!, following the official packaging guide).
+        let runtime_abs = std::fs::canonicalize(&runtime_target)
+            .unwrap_or_else(|_| {
+                // Fallback for older Rust: join with current_dir
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(&runtime_target))
+                    .unwrap_or_else(|_| runtime_target.clone())
+            });
+
+        println!("=== treelix custom install (following official packaging guide) ===");
+        println!("  Target binary : {}", binary_target.display());
+        println!("  Target runtime: {}", runtime_target.display());
+        println!("  HELIX_DEFAULT_RUNTIME (baked in): {}", runtime_abs.display());
+        println!();
+
+        std::fs::create_dir_all(&bin_dir)?;
+        std::fs::create_dir_all(&runtime_target)?;
+
+        // Copy the entire runtime directory (grammars, queries, themes, etc.)
+        // This is the key step that normal packages do.
+        println!("Copying runtime/ into place...");
+        let cp_status = std::process::Command::new("cp")
+            .args(["-r", "runtime/.", runtime_target.to_str().unwrap()])
             .status()?;
-        if !status.success() {
+        if !cp_status.success() {
+            return Err("Failed to copy runtime directory".into());
+        }
+
+        // Set the variable for this build so it gets compiled into the binary
+        // (this is exactly what the packaging guide in book/src/building-from-source.md recommends).
+        std::env::set_var("HELIX_DEFAULT_RUNTIME", &runtime_abs);
+
+        println!("Building release binary with HELIX_DEFAULT_RUNTIME baked in...");
+        let build_status = std::process::Command::new("cargo")
+            .args(["build", "--release", "-p", "helix-term"])
+            .env("HELIX_DEFAULT_RUNTIME", &runtime_abs)
+            .status()?;
+        if !build_status.success() {
             return Err("Release build failed".into());
         }
 
-        let src = "target/release/hx";
-        let dst_dir = "../bin";
-        std::fs::create_dir_all(dst_dir)?;
-
-        let dst = format!("{}/helix", dst_dir);
-        std::fs::copy(src, &dst)?;
+        // Install the binary as "helix" (so typing `helix` runs your custom build)
+        println!("Installing binary as 'helix'...");
+        std::fs::copy("target/release/hx", &binary_target)?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&dst)?.permissions();
+            let mut perms = std::fs::metadata(&binary_target)?.permissions();
             perms.set_mode(0o755);
-            std::fs::set_permissions(&dst, perms)?;
+            std::fs::set_permissions(&binary_target, perms)?;
         }
 
-        println!("Successfully placed release binary at {}", dst);
-        println!("The 'helix' command in tools/bin now maps to your custom treelix build.");
-        println!("Make sure ../bin is in your PATH to use it as 'helix'.");
+        println!();
+        println!("✅ Successfully installed custom Helix build:");
+        println!("   Binary : {}", binary_target.display());
+        println!("   Runtime: {}", runtime_target.display());
+        println!();
+        println!("Because we followed the packaging guide (set HELIX_DEFAULT_RUNTIME at build time");
+        println!("and placed runtime/ next to the binary), this `helix` should work like a normal");
+        println!("installed version — no need to set HELIX_RUNTIME manually for colors/LSP/etc.");
+        println!();
+        println!("Make sure '{}' is early in your PATH if you want `helix` to prefer this build.", bin_dir.display());
+
         Ok(())
     }
 }

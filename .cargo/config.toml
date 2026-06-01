@@ -14,4 +14,6 @@ rustflags = ["--cfg", "tokio_unstable", "-C", "target-feature=-crt-static"]
 [alias]
 xtask = "run --package xtask --"
 integration-test = "test --features integration --profile integration --workspace --test integration"
+# Convenient way to get a release build placed in your personal tools/bin as "helix"
+rbuild = ["xtask", "install"]
 

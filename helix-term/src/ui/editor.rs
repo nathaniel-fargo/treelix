@@ -94,6 +94,9 @@ pub struct FileTree {
     pub gitignore: Option<Gitignore>,
     /// Whether the current root is inside a git repo (for bold on git directories)
     pub is_git_repo: bool,
+    /// Short git status for visible files (first char of porcelain: ' ' 'M' 'A' 'D' 'R' 'U' '?' etc.)
+    /// Used for green/yellow/red file coloring.
+    pub git_status: std::collections::HashMap<PathBuf, char>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +127,7 @@ impl FileTree {
             input_mode: None,
             gitignore: None,
             is_git_repo: false,
+            git_status: std::collections::HashMap::new(),
         };
         tree.refresh_git();
         tree.rebuild_entries();
@@ -227,9 +231,64 @@ impl FileTree {
     fn refresh_git(&mut self) {
         self.gitignore = Self::build_gitignore(&self.root);
         self.is_git_repo = self.root.join(".git").exists();
-        // Note: full git status (green/yellow/red for files) can be added later using
-        // a shell-out to `git status --porcelain` or the vcs crate when the module is public.
-        // For now, we have the Gitignore for greyed ignored and is_git_repo for bold dirs.
+        self.git_status.clear();
+
+        if !self.is_git_repo {
+            return;
+        }
+
+        // Parse `git status --porcelain -z` for per-file status (reliable, no extra deps).
+        // Format: XY PATH\0 (or for renames: XY ORIG\0NEW\0)
+        if let Ok(output) = std::process::Command::new("git")
+            .args(["-C", &self.root.to_string_lossy(), "status", "--porcelain", "-z", "--ignored"])
+            .output()
+        {
+            if output.status.success() {
+                let bytes = output.stdout;
+                let mut i = 0;
+                while i + 3 < bytes.len() {
+                    let x = bytes[i] as char;
+                    let y = bytes[i + 1] as char;
+                    i += 2;
+                    // skip space
+                    while i < bytes.len() && bytes[i] == b' ' { i += 1; }
+                    // read path until \0
+                    let start = i;
+                    while i < bytes.len() && bytes[i] != 0 { i += 1; }
+                    if i > start {
+                        let path_str = String::from_utf8_lossy(&bytes[start..i]).to_string();
+                        let full_path = self.root.join(&path_str);
+                        // First char of XY is the index status, second is worktree.
+                        // We use a simple representative char for coloring.
+                        let status_char = if x == '!' || y == '!' {
+                            '!' // ignored (we also have separate is_ignored)
+                        } else if x == '?' || y == '?' {
+                            '?'
+                        } else if x == 'M' || y == 'M' {
+                            'M'
+                        } else if x == 'A' || y == 'A' {
+                            'A'
+                        } else if x == 'D' || y == 'D' {
+                            'D'
+                        } else if x == 'R' || y == 'R' {
+                            'R'
+                        } else if x == 'U' || y == 'U' {
+                            'U'
+                        } else {
+                            ' '
+                        };
+                        self.git_status.insert(full_path, status_char);
+                    }
+                    i += 1; // skip the \0
+                    // handle rename pair (extra \0 path)
+                    if (x == 'R' || y == 'R') && i < bytes.len() {
+                        // skip the second path for rename
+                        while i < bytes.len() && bytes[i] != 0 { i += 1; }
+                        i += 1;
+                    }
+                }
+            }
+        }
     }
 
     pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
@@ -1344,10 +1403,10 @@ impl EditorView {
                     text_style
                 };
 
-                // Git styling as requested:
-                // - Bold for git directories (no color change, just bold)
+                // Git styling (per your spec):
+                // - Bold for git directories (no color/highlight change, just BOLD on the dir style)
                 // - Greyed out (dim) for .gitignored files
-                // - Usual green/yellow/red for status (using diff styles)
+                // - Usual green (new/added), yellow (modified), red (deleted) for file status
                 if entry.is_ignored {
                     style = theme
                         .try_get("ui.text.dim")
@@ -1357,8 +1416,28 @@ impl EditorView {
                     if tree.is_git_repo {
                         style = style.add_modifier(Modifier::BOLD);
                     }
-                } else if tree.is_git_repo {
-                    // For tracked files without pending change, perhaps leave as is or subtle
+                } else if let Some(&code) = tree.git_status.get(&entry.path) {
+                    match code {
+                        '?' | 'A' => {
+                            // new / untracked / added → green
+                            if let Some(s) = theme.try_get("diff.plus") {
+                                style = s;
+                            }
+                        }
+                        'M' | 'R' => {
+                            // modified / renamed → yellow
+                            if let Some(s) = theme.try_get("diff.delta") {
+                                style = s;
+                            }
+                        }
+                        'D' | 'U' => {
+                            // deleted / conflict → red
+                            if let Some(s) = theme.try_get("diff.minus") {
+                                style = s;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
 
                 // Indentation + indicator

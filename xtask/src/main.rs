@@ -94,8 +94,39 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
                                    languages, or all languages if none are specified.
         theme-check [themes]       Check that the theme files in runtime/themes/ are valid for the
                                    given themes, or all themes if none are specified.
+        install                    Build release and place the binary in ../bin/helix (for your tools collection).
 "
         );
+    }
+
+    pub fn install() -> Result<(), DynError> {
+        println!("Building release version of helix-term...");
+        let status = std::process::Command::new("cargo")
+            .args(["build", "--release", "-p", "helix-term"])
+            .status()?;
+        if !status.success() {
+            return Err("Release build failed".into());
+        }
+
+        let src = "target/release/hx";
+        let dst_dir = "../bin";
+        std::fs::create_dir_all(dst_dir)?;
+
+        let dst = format!("{}/helix", dst_dir);
+        std::fs::copy(src, &dst)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&dst)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&dst, perms)?;
+        }
+
+        println!("Successfully placed release binary at {}", dst);
+        println!("The 'helix' command in tools/bin now maps to your custom treelix build.");
+        println!("Make sure ../bin is in your PATH to use it as 'helix'.");
+        Ok(())
     }
 }
 
@@ -108,6 +139,7 @@ fn main() -> Result<(), DynError> {
             "docgen" => tasks::docgen()?,
             "query-check" => tasks::querycheck(args)?,
             "theme-check" => tasks::themecheck(args)?,
+            "install" => tasks::install()?,
             invalid => return Err(format!("Invalid task name: {}", invalid).into()),
         },
     };

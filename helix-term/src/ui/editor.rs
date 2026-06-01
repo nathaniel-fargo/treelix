@@ -32,6 +32,8 @@ use helix_view::{
     keyboard::{KeyCode, KeyModifiers},
     Document, Editor, Theme, View,
 };
+
+use ignore::gitignore::Gitignore;
 use std::{
     collections::HashSet,
     fs,
@@ -87,6 +89,11 @@ pub struct FileTree {
 
     /// Temporary input/confirm mode for create, rename, delete
     pub input_mode: Option<InputMode>,
+
+    /// Gitignore matcher for the current root (to grey out ignored files)
+    pub gitignore: Option<Gitignore>,
+    /// Whether the current root is inside a git repo (for bold on git directories)
+    pub is_git_repo: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +102,7 @@ pub struct FileEntry {
     pub depth: u16,
     pub is_dir: bool,
     pub is_expanded: bool,
+    pub is_ignored: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -114,7 +122,10 @@ impl FileTree {
             entries: Vec::new(),
             clipboard: None,
             input_mode: None,
+            gitignore: None,
+            is_git_repo: false,
         };
+        tree.refresh_git();
         tree.rebuild_entries();
         tree
     }
@@ -146,11 +157,13 @@ impl FileTree {
                 let is_dir = path.is_dir();
                 let is_expanded = is_dir && self.expanded.contains(&path);
 
+                let is_ignored = self.is_ignored(&path, is_dir);
                 self.entries.push(FileEntry {
                     path: path.clone(),
                     depth,
                     is_dir,
                     is_expanded,
+                    is_ignored,
                 });
 
                 if is_dir && is_expanded {
@@ -193,6 +206,7 @@ impl FileTree {
             self.root = new_root;
             self.expanded.clear();
             self.selected = 0;
+            self.refresh_git();
             self.rebuild_entries();
         }
     }
@@ -202,6 +216,26 @@ impl FileTree {
         if let Some(parent) = self.root.parent() {
             self.cd_to(parent.to_path_buf());
         }
+    }
+
+    fn build_gitignore(root: &Path) -> Option<Gitignore> {
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+        let _ = builder.add(root.join(".gitignore"));
+        builder.build().ok()
+    }
+
+    fn refresh_git(&mut self) {
+        self.gitignore = Self::build_gitignore(&self.root);
+        self.is_git_repo = self.root.join(".git").exists();
+        // Note: full git status (green/yellow/red for files) can be added later using
+        // a shell-out to `git status --porcelain` or the vcs crate when the module is public.
+        // For now, we have the Gitignore for greyed ignored and is_git_repo for bold dirs.
+    }
+
+    pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        self.gitignore
+            .as_ref()
+            .map_or(false, |gi| gi.matched(path, is_dir).is_ignore())
     }
 
     /// Returns the directory context for operations like create/paste.
@@ -1310,18 +1344,21 @@ impl EditorView {
                     text_style
                 };
 
-                // Git-aware coloring for directories (modern IDE style)
-                // Color repo roots (dirs containing .git) distinctly.
-                if entry.is_dir {
-                    let git_dir = entry.path.join(".git");
-                    if git_dir.exists() {
-                        // Prefer theme git color if available, otherwise a nice blue-ish
-                        style = theme
-                            .try_get("git.branch")
-                            .or_else(|| theme.try_get("ui.text.directory"))
-                            .unwrap_or(style)
-                            .add_modifier(Modifier::BOLD);
+                // Git styling as requested:
+                // - Bold for git directories (no color change, just bold)
+                // - Greyed out (dim) for .gitignored files
+                // - Usual green/yellow/red for status (using diff styles)
+                if entry.is_ignored {
+                    style = theme
+                        .try_get("ui.text.dim")
+                        .unwrap_or_else(|| style)
+                        .add_modifier(Modifier::DIM);
+                } else if entry.is_dir {
+                    if tree.is_git_repo {
+                        style = style.add_modifier(Modifier::BOLD);
                     }
+                } else if tree.is_git_repo {
+                    // For tracked files without pending change, perhaps leave as is or subtle
                 }
 
                 // Indentation + indicator

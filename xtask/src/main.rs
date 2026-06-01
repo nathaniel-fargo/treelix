@@ -108,7 +108,7 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
         let workspace_root = crate::path::project_root();
         let tools_root = workspace_root
             .parent()
-            .ok_or_else(|| "Could not determine parent of workspace (expected tools/treelix layout)")?;
+            .ok_or("Could not determine parent of workspace (expected tools/treelix layout)")?;
         let bin_dir = tools_root.join("bin");
         let runtime_target = bin_dir.join("runtime");
         let binary_target = bin_dir.join("helix");
@@ -164,7 +164,7 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
 
         println!("Building release binary with HELIX_DEFAULT_RUNTIME baked in...");
         let build_status = std::process::Command::new("cargo")
-            .args(["build", "--release", "-p", "helix-term"])
+            .args(["build", "--release", "-p", "helix-term", "--locked"])
             .env("HELIX_DEFAULT_RUNTIME", &runtime_abs)
             .status()?;
         if !build_status.success() {
@@ -172,8 +172,11 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
         }
 
         // Install the binary as "helix" (so `helix` in PATH prefers this custom build).
+        // Use the same robust workspace_root-derived path we computed for everything else
+        // (no assumption that cwd == workspace root when `cargo rbuild` is invoked).
         println!("Installing binary as 'helix'...");
-        std::fs::copy("target/release/hx", &binary_target)?;
+        let hx_source = workspace_root.join("target/release/hx");
+        std::fs::copy(&hx_source, &binary_target)?;
 
         #[cfg(unix)]
         {
@@ -185,7 +188,7 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
 
         // --- Post-install verification (the key part of "iterate until working") ---
         println!();
-        println!("Verifying packaged install by running the new binary --health ...");
+        println!("Verifying packaged install by running the new binary --health (no HELIX_RUNTIME)...");
         let verify_out = std::process::Command::new(&binary_target)
             .args(["--health"])
             .env_remove("HELIX_RUNTIME") // ensure we test the baked-in behavior, not an override
@@ -199,7 +202,25 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
         let complains_about_target = health.contains(&format!("does not exist: {}", target_str))
             || health.contains(&format!("is empty: {}", target_str));
 
-        println!("{}", health);
+        // Polish: never dump the entire 25KB language matrix on every rbuild.
+        // Print a compact, actionable summary (runtime section + any existence warnings).
+        // Full output is still available by running the installed `helix --health` directly.
+        println!();
+        println!("--- packaged `helix --health` summary ---");
+        for line in health.lines() {
+            let l = line.trim();
+            if l.starts_with("Config file:")
+                || l.starts_with("Language file:")
+                || l.starts_with("Log file:")
+                || l.starts_with("Runtime directories:")
+                || l.contains("does not exist:")
+                || l.contains("is empty:")
+                || l.starts_with("System clipboard")
+            {
+                println!("{}", line);
+            }
+        }
+        println!("--- end summary ---");
 
         println!();
         if lists_baked && !complains_about_target {
@@ -210,6 +231,9 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
             println!("❌ VERIFICATION FAILED: the baked HELIX_DEFAULT_RUNTIME path did not appear in --health output.");
             println!("   This usually means a stale build cache still had an old expansion of option_env!.");
             println!("   (We did run `cargo clean -p helix-loader`; try `cargo clean` + rbuild again if needed.)");
+            // On failure, also show the full health for debugging (rare).
+            println!("\n--- full --health for diagnosis ---");
+            println!("{}", health);
         }
 
         println!();
@@ -220,6 +244,8 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
         println!("The binary was built with HELIX_DEFAULT_RUNTIME set (priority 4 in the lookup).");
         println!("Combined with the exe-sibling fallback (priority 5), `helix` from tools/bin will find");
         println!("its runtime for themes, queries, grammars, and LSP semantic tokens with no manual env.");
+        println!("(Note: for the tools/bin + sibling-runtime layout the two lowest priorities resolve to");
+        println!(" the same path and appear duplicated in --health; this is harmless and expected.)");
         println!();
         println!("Put '{}' early in $PATH to make `helix` use this build.", bin_dir.display());
 

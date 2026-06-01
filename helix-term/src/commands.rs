@@ -3271,11 +3271,7 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
 /// Toggle visibility of the persistent file tree sidebar (left side, nvim-tree style).
 fn file_tree_toggle(cx: &mut Context) {
     cx.editor.file_tree_visible = !cx.editor.file_tree_visible;
-    if cx.editor.file_tree_visible {
-        cx.editor.file_tree_focused = true;
-    } else {
-        cx.editor.file_tree_focused = false;
-    }
+    cx.editor.file_tree_focused = cx.editor.file_tree_visible;
     cx.editor.needs_redraw = true;
 }
 

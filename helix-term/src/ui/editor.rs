@@ -294,7 +294,7 @@ impl FileTree {
     pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
         self.gitignore
             .as_ref()
-            .map_or(false, |gi| gi.matched(path, is_dir).is_ignore())
+            .is_some_and(|gi| gi.matched(path, is_dir).is_ignore())
     }
 
     /// Returns the directory context for operations like create/paste.
@@ -1410,7 +1410,7 @@ impl EditorView {
                 if entry.is_ignored {
                     style = theme
                         .try_get("ui.text.dim")
-                        .unwrap_or_else(|| style)
+                        .unwrap_or(style)
                         .add_modifier(Modifier::DIM);
                 } else if entry.is_dir {
                     if tree.is_git_repo {
@@ -1994,7 +1994,7 @@ impl EditorView {
         }
 
         // File tree sidebar mouse support (click to select/toggle/open + focus transfer)
-        let click_in_sidebar = self.last_sidebar_rect.map_or(false, |r| {
+        let click_in_sidebar = self.last_sidebar_rect.is_some_and(|r| {
             cxt.editor.file_tree_visible
                 && event.column >= r.x
                 && event.column < r.x + r.width

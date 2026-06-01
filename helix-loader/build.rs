@@ -38,6 +38,11 @@ fn main() {
 
     println!("cargo:rustc-env=VERSION_AND_GIT_HASH={}", version);
 
+    // Ensure that changes to HELIX_DEFAULT_RUNTIME (used via option_env! in lib.rs
+    // for packagers following the "Note to packagers" guide) cause helix-loader
+    // to be recompiled so the baked-in path is updated.
+    println!("cargo:rerun-if-env-changed=HELIX_DEFAULT_RUNTIME");
+
     if git_hash.is_none() {
         return;
     }

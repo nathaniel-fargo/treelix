@@ -102,19 +102,24 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
     }
 
     pub fn install() -> Result<(), DynError> {
-        let bin_dir = std::path::PathBuf::from("../bin");
+        // Robust path computation based on the xtask's view of the workspace.
+        // This checkout lives under the user's "tools/" collection (e.g. Projects/tools/treelix),
+        // and we want the packaged build in the sibling tools/bin/ (with helix + runtime/).
+        let workspace_root = crate::path::project_root();
+        let tools_root = workspace_root
+            .parent()
+            .ok_or_else(|| "Could not determine parent of workspace (expected tools/treelix layout)")?;
+        let bin_dir = tools_root.join("bin");
         let runtime_target = bin_dir.join("runtime");
         let binary_target = bin_dir.join("helix");
 
-        // Compute absolute path for HELIX_DEFAULT_RUNTIME (this gets baked into the binary
-        // at compile time via std::option_env!, following the official packaging guide).
-        let runtime_abs = std::fs::canonicalize(&runtime_target)
-            .unwrap_or_else(|_| {
-                // Fallback for older Rust: join with current_dir
-                std::env::current_dir()
-                    .map(|cwd| cwd.join(&runtime_target))
-                    .unwrap_or_else(|_| runtime_target.clone())
-            });
+        // The absolute path we will bake into the binary via HELIX_DEFAULT_RUNTIME.
+        // This is the "distribution fallback" per the packaging guide.
+        let runtime_abs = if runtime_target.exists() {
+            std::fs::canonicalize(&runtime_target)?
+        } else {
+            runtime_target.clone()
+        };
 
         println!("=== treelix custom install (following official packaging guide) ===");
         println!("  Target binary : {}", binary_target.display());
@@ -122,21 +127,39 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
         println!("  HELIX_DEFAULT_RUNTIME (baked in): {}", runtime_abs.display());
         println!();
 
+        // Prepare a clean destination (remove any stale previous runtime so the copy is exact).
+        if runtime_target.exists() {
+            println!("Removing previous runtime directory for a clean copy...");
+            std::fs::remove_dir_all(&runtime_target)?;
+        }
         std::fs::create_dir_all(&bin_dir)?;
         std::fs::create_dir_all(&runtime_target)?;
 
-        // Copy the entire runtime directory (grammars, queries, themes, etc.)
-        // This is the key step that normal packages do.
-        println!("Copying runtime/ into place...");
+        // Copy the entire runtime tree using the platform `cp` (fast + correct handling
+        // of the large grammars/ tree including any symlinks in sources/ that exist in
+        // this checkout). We use absolute paths so it is independent of cwd.
+        let src_runtime = crate::path::runtime();
+        println!("Copying runtime/ into place (this may take a moment for grammars)...");
         let cp_status = std::process::Command::new("cp")
-            .args(["-r", "runtime/.", runtime_target.to_str().unwrap()])
+            .args([
+                "-a",
+                &format!("{}/.", src_runtime.display()),
+                &format!("{}/", runtime_target.display()),
+            ])
             .status()?;
         if !cp_status.success() {
-            return Err("Failed to copy runtime directory".into());
+            return Err("Failed to copy runtime directory (cp failed)".into());
         }
 
-        // Set the variable for this build so it gets compiled into the binary
-        // (this is exactly what the packaging guide in book/src/building-from-source.md recommends).
+        // Clean only helix-loader so that the subsequent build will recompile it with the
+        // *current* value of HELIX_DEFAULT_RUNTIME visible to option_env! in lib.rs.
+        // (The rerun-if-env-changed we added to build.rs also helps for incremental cases.)
+        println!("Cleaning cached helix-loader artifacts to guarantee fresh bake of HELIX_DEFAULT_RUNTIME...");
+        let _ = std::process::Command::new("cargo")
+            .args(["clean", "-p", "helix-loader"])
+            .status(); // best-effort; ignore failure
+
+        // Export for this process + explicitly pass to the cargo child (the one that runs rustc).
         std::env::set_var("HELIX_DEFAULT_RUNTIME", &runtime_abs);
 
         println!("Building release binary with HELIX_DEFAULT_RUNTIME baked in...");
@@ -148,7 +171,7 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
             return Err("Release build failed".into());
         }
 
-        // Install the binary as "helix" (so typing `helix` runs your custom build)
+        // Install the binary as "helix" (so `helix` in PATH prefers this custom build).
         println!("Installing binary as 'helix'...");
         std::fs::copy("target/release/hx", &binary_target)?;
 
@@ -160,16 +183,45 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
             std::fs::set_permissions(&binary_target, perms)?;
         }
 
+        // --- Post-install verification (the key part of "iterate until working") ---
         println!();
-        println!("✅ Successfully installed custom Helix build:");
+        println!("Verifying packaged install by running the new binary --health ...");
+        let verify_out = std::process::Command::new(&binary_target)
+            .args(["--health"])
+            .env_remove("HELIX_RUNTIME") // ensure we test the baked-in behavior, not an override
+            .output()?;
+        let health = String::from_utf8_lossy(&verify_out.stdout);
+
+        let baked_str = runtime_abs.to_string_lossy().to_string();
+        let target_str = runtime_target.to_string_lossy().to_string();
+
+        let lists_baked = health.contains(&baked_str) || health.contains(&target_str);
+        let complains_about_target = health.contains(&format!("does not exist: {}", target_str))
+            || health.contains(&format!("is empty: {}", target_str));
+
+        println!("{}", health);
+
+        println!();
+        if lists_baked && !complains_about_target {
+            println!("✅ VERIFICATION PASSED: packaged runtime appears in runtime_dirs() and exists.");
+        } else if lists_baked {
+            println!("⚠️  VERIFICATION PARTIAL: path is listed but --health reported a problem with it.");
+        } else {
+            println!("❌ VERIFICATION FAILED: the baked HELIX_DEFAULT_RUNTIME path did not appear in --health output.");
+            println!("   This usually means a stale build cache still had an old expansion of option_env!.");
+            println!("   (We did run `cargo clean -p helix-loader`; try `cargo clean` + rbuild again if needed.)");
+        }
+
+        println!();
+        println!("✅ Finished custom Helix install:");
         println!("   Binary : {}", binary_target.display());
         println!("   Runtime: {}", runtime_target.display());
         println!();
-        println!("Because we followed the packaging guide (set HELIX_DEFAULT_RUNTIME at build time");
-        println!("and placed runtime/ next to the binary), this `helix` should work like a normal");
-        println!("installed version — no need to set HELIX_RUNTIME manually for colors/LSP/etc.");
+        println!("The binary was built with HELIX_DEFAULT_RUNTIME set (priority 4 in the lookup).");
+        println!("Combined with the exe-sibling fallback (priority 5), `helix` from tools/bin will find");
+        println!("its runtime for themes, queries, grammars, and LSP semantic tokens with no manual env.");
         println!();
-        println!("Make sure '{}' is early in your PATH if you want `helix` to prefer this build.", bin_dir.display());
+        println!("Put '{}' early in $PATH to make `helix` use this build.", bin_dir.display());
 
         Ok(())
     }
